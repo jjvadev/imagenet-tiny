@@ -1,0 +1,148 @@
+import json
+import os
+
+
+
+def generate_analysis_notebook(
+    results_dir: str,
+    summary: dict,
+    history_csv_path: str,
+    summary_json_path: str,
+):
+    nb_path = os.path.join(results_dir, "analysis.ipynb")
+
+    notebook = {
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [
+                    "# Analisis de entrenamiento distribuido Tiny ImageNet\n",
+                    "\n",
+                    "Notebook generado automaticamente.\n",
+                    "\n",
+                    "Carga metricas, resume el experimento y genera visualizaciones clave.\n",
+                ],
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "import json\n",
+                    "import pandas as pd\n",
+                    "import matplotlib.pyplot as plt\n",
+                    "from pathlib import Path\n",
+                    f'csv_file = Path(r"{history_csv_path}")\n',
+                    f'json_file = Path(r"{summary_json_path}")\n',
+                    "df = pd.read_csv(csv_file)\n",
+                    "with open(json_file, 'r', encoding='utf-8') as f:\n",
+                    "    summary = json.load(f)\n",
+                    "df['train_val_gap_top1'] = df['train_top1'] - df['val_top1']\n",
+                    "df['val_gain'] = df['val_top1'].diff().fillna(0)\n",
+                    "df\n",
+                ],
+            },
+            {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [
+                    "## Resumen\n",
+                    "\n",
+                    f"- Arquitectura: {summary['arch']}\n",
+                    f"- Optimizer: {summary['optimizer']}\n",
+                    f"- Rounds: {summary['rounds']}\n",
+                    f"- Local epochs: {summary['local_epochs']}\n",
+                    f"- Workers: {summary['num_workers']}\n",
+                    f"- LR: {summary['lr']}\n",
+                    f"- Batch size: {summary['batch_size']}\n",
+                    f"- Device de evaluacion: {summary['device']}\n",
+                    f"- Mejor Val Top-1: {summary['best_val_top1']:.4f}\n",
+                    f"- Mejor Val Top-5: {summary['best_val_top5']:.4f}\n",
+                    f"- Tiempo total: {summary['total_time_sec']:.2f} s\n",
+                ],
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "plt.figure(figsize=(8,5))\n",
+                    "plt.plot(df['round'], df['train_loss'], marker='o', label='Loss train')\n",
+                    "plt.plot(df['round'], df['val_loss'], marker='s', label='Loss val')\n",
+                    "plt.title('Loss por round')\n",
+                    "plt.xlabel('Round')\n",
+                    "plt.ylabel('Loss')\n",
+                    "plt.grid(True)\n",
+                    "plt.legend()\n",
+                    "plt.show()\n",
+                    "\n",
+                    "plt.figure(figsize=(8,5))\n",
+                    "plt.plot(df['round'], df['train_top1'], marker='o', label='Train Top-1')\n",
+                    "plt.plot(df['round'], df['val_top1'], marker='s', label='Val Top-1')\n",
+                    "plt.title('Accuracy Top-1 por round')\n",
+                    "plt.xlabel('Round')\n",
+                    "plt.ylabel('Top-1')\n",
+                    "plt.grid(True)\n",
+                    "plt.legend()\n",
+                    "plt.show()\n",
+                    "\n",
+                    "plt.figure(figsize=(8,5))\n",
+                    "plt.plot(df['round'], df['train_top5'], marker='o', label='Train Top-5')\n",
+                    "plt.plot(df['round'], df['val_top5'], marker='s', label='Val Top-5')\n",
+                    "plt.title('Accuracy Top-5 por round')\n",
+                    "plt.xlabel('Round')\n",
+                    "plt.ylabel('Top-5')\n",
+                    "plt.grid(True)\n",
+                    "plt.legend()\n",
+                    "plt.show()\n",
+                    "\n",
+                    "plt.figure(figsize=(8,5))\n",
+                    "plt.plot(df['round'], df['round_time_sec'], marker='o', label='Tiempo por round')\n",
+                    "plt.plot(df['round'], df['total_time_sec'], marker='s', label='Tiempo acumulado')\n",
+                    "plt.title('Tiempo de entrenamiento')\n",
+                    "plt.xlabel('Round')\n",
+                    "plt.ylabel('Segundos')\n",
+                    "plt.grid(True)\n",
+                    "plt.legend()\n",
+                    "plt.show()\n",
+                    "\n",
+                    "plt.figure(figsize=(8,5))\n",
+                    "plt.plot(df['round'], df['train_val_gap_top1'], marker='o')\n",
+                    "plt.title('Gap train-val Top-1')\n",
+                    "plt.xlabel('Round')\n",
+                    "plt.ylabel('Diferencia')\n",
+                    "plt.grid(True)\n",
+                    "plt.show()\n",
+                ],
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "best_idx = df['val_top1'].idxmax()\n",
+                    "best_row = df.loc[best_idx]\n",
+                    "print(f\"Mejor round: {int(best_row['round'])}\")\n",
+                    "print(f\"Val Top-1: {best_row['val_top1']:.4f}\")\n",
+                    "print(f\"Val Top-5: {best_row['val_top5']:.4f}\")\n",
+                    "print(f\"Loss val: {best_row['val_loss']:.4f}\")\n",
+                    "print(f\"Tiempo total final: {df.iloc[-1]['total_time_sec']:.2f} s\")\n",
+                ],
+            },
+        ],
+        "metadata": {
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+            "language_info": {"name": "python", "version": "3.x"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+
+    with open(nb_path, "w", encoding="utf-8") as f:
+        json.dump(notebook, f, indent=2, ensure_ascii=False)
+
+    print(f"Notebook generado: {nb_path}")

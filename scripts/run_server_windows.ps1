@@ -1,0 +1,18 @@
+python server.py `
+  --host 0.0.0.0 `
+  --port 5001 `
+  --num-workers 2 `
+  --rounds 5 `
+  --local-epochs 1 `
+  --arch resnet18 `
+  --pretrained `
+  --lr 0.01 `
+  --optimizer sgd `
+  --momentum 0.9 `
+  --weight-decay 1e-4 `
+  --batch-size 64 `
+  --eval-batch-size 128 `
+  --image-size 64 `
+  --augmentation `
+  --val-dir "C:\ruta\tiny-imagenet-200\val" `
+  --results-dir results
