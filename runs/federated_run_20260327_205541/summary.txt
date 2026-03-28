@@ -1,0 +1,36 @@
+FEDERATED TRAINING SUMMARY
+========================================================================
+Dataset root: C:\Users\juanv\Downloads\imagenet-tiny
+Run dir: runs\federated_run_20260327_205541
+Device: cpu
+Rounds requested: 3
+Rounds completed: 3
+Workers expected: 4
+Local epochs: 1
+Learning rate: 0.01
+Train batch size: 128
+Val batch size: 256
+Loader workers: 0
+Total wall time (s): 5378.15
+
+LAST ROUND
+------------------------------------------------------------------------
+Round: 3
+Train loss: 4.2624
+Train acc: 0.0991
+Train top5: 0.2793
+Val loss: 4.0203
+Val acc: 0.1322
+Val top5: 0.3451
+
+BEST
+------------------------------------------------------------------------
+Best val_acc: round 3 -> 0.1322
+Best val_top5: round 3 -> 0.3451
+Best val_loss: round 3 -> 4.0203
+
+PROGRESS
+------------------------------------------------------------------------
+Delta val_acc:  +0.1013
+Delta val_top5: +0.2331
+Delta val_loss: +0.9290

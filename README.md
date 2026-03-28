@@ -303,6 +303,12 @@ El server guarda dentro de `results/`:
 python server.py --num-workers 2 --rounds 3 --local-epochs 1 --arch small_cnn --lr 0.01 --optimizer sgd --val-dir "/Users/zarko1989/Documents/tiny-imagenet-200/val"
 ```
 
+### Entrenamiento rapido para validacion tecnica
+
+```bash windows
+python server.py --num-workers 2 --rounds 3 --local-epochs 1 --arch small_cnn --lr 0.01 --optimizer sgd --val-dir "\juanv\Downloads\imagenet-tiny\val"
+```
+
 ### Mejor balance calidad/velocidad
 
 ```bash

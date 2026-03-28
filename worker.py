@@ -1,10 +1,13 @@
 import argparse
 import gc
+import math
 import pickle
 import socket
 import struct
+import sys
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 from PIL import Image
@@ -15,9 +18,63 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import models, transforms
 
 
-# ----------------------------
+# =========================================================
+# Terminal styling
+# =========================================================
+class C:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+
+
+def supports_color():
+    return sys.stdout.isatty()
+
+
+USE_COLOR = supports_color()
+
+
+def color(text, tone):
+    if not USE_COLOR:
+        return text
+    return f"{tone}{text}{C.RESET}"
+
+
+def ts():
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def log(msg, level="INFO"):
+    tones = {
+        "INFO": C.CYAN,
+        "OK": C.GREEN,
+        "WARN": C.YELLOW,
+        "ERR": C.RED,
+        "STEP": C.MAGENTA,
+        "METRIC": C.BLUE,
+    }
+    level_str = color(f"{level:>6}", tones.get(level, C.WHITE))
+    print(f"[{ts()}] {level_str} | {msg}", flush=True)
+
+
+def banner(name):
+    line = "=" * 88
+    print(color(line, C.BLUE))
+    print(color(f" FEDERATED WORKER [{name}] ".center(88), C.BOLD + C.GREEN))
+    print(color(line, C.BLUE), flush=True)
+
+
+# =========================================================
 # Socket helpers
-# ----------------------------
+# =========================================================
 def send_msg(sock, obj):
     payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
     header = struct.pack("!Q", len(payload))
@@ -41,9 +98,9 @@ def recv_msg(sock):
     return pickle.loads(payload)
 
 
-# ----------------------------
-# Model / metrics
-# ----------------------------
+# =========================================================
+# Model and metrics
+# =========================================================
 def build_model(num_classes=200):
     model = models.resnet18(weights=None)
     model.conv1 = nn.Conv2d(
@@ -84,9 +141,9 @@ def select_device(prefer_mps=True):
     return torch.device("cpu")
 
 
-# ----------------------------
-# Tiny-ImageNet dataset
-# ----------------------------
+# =========================================================
+# Dataset
+# =========================================================
 class TinyImageNetDataset(Dataset):
     def __init__(self, root, split="train", transform=None):
         self.root = Path(root)
@@ -97,7 +154,7 @@ class TinyImageNetDataset(Dataset):
         if not wnids_path.exists():
             raise FileNotFoundError(f"No existe: {wnids_path}")
 
-        with open(wnids_path, "r") as f:
+        with open(wnids_path, "r", encoding="utf-8") as f:
             self.wnids = [line.strip() for line in f if line.strip()]
 
         self.class_to_idx = {wnid: i for i, wnid in enumerate(self.wnids)}
@@ -112,7 +169,7 @@ class TinyImageNetDataset(Dataset):
                 for img_path in sorted(img_dir.glob("*.JPEG")):
                     self.samples.append((str(img_path), self.class_to_idx[wnid]))
         else:
-            raise ValueError("Este worker solo usa split='train'")
+            raise ValueError("This worker only supports split='train'")
 
         if not self.samples:
             raise RuntimeError(f"No se encontraron imágenes en {root} [{split}]")
@@ -143,14 +200,12 @@ def make_partitioned_loader(data_dir, worker_id, partition_count, batch_size, lo
 
     dataset = TinyImageNetDataset(data_dir, split="train", transform=transform)
 
-    # partición determinista fija entre workers
     g = torch.Generator()
     g.manual_seed(12345)
     perm = torch.randperm(len(dataset), generator=g).tolist()
     indices = perm[worker_id::partition_count]
 
     subset = Subset(dataset, indices)
-
     loader = DataLoader(
         subset,
         batch_size=batch_size,
@@ -161,7 +216,15 @@ def make_partitioned_loader(data_dir, worker_id, partition_count, batch_size, lo
     return loader, len(subset)
 
 
-def train_one_round(model, loader, device, lr, local_epochs):
+def train_one_round(
+    model,
+    loader,
+    device,
+    lr,
+    local_epochs,
+    worker_name="worker",
+    log_interval=50,
+):
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(
         model.parameters(),
@@ -171,16 +234,26 @@ def train_one_round(model, loader, device, lr, local_epochs):
     )
 
     model.train()
-
     total_loss = 0.0
-    total_top1 = 0.0
+    total_acc = 0.0
     total_top5 = 0.0
     total_samples = 0
 
     t0 = time.time()
+    total_batches = len(loader) * local_epochs
+    global_batch = 0
 
-    for _ in range(local_epochs):
-        for images, targets in loader:
+    log(
+        f"[{worker_name}] Local training starting | epochs={local_epochs} | batches/epoch={len(loader)} | lr={lr}",
+        "STEP",
+    )
+
+    for epoch in range(local_epochs):
+        log(f"[{worker_name}] Epoch {epoch + 1}/{local_epochs} started", "STEP")
+
+        for batch_idx, (images, targets) in enumerate(loader, start=1):
+            global_batch += 1
+
             images = images.to(device)
             targets = targets.to(device)
 
@@ -191,27 +264,42 @@ def train_one_round(model, loader, device, lr, local_epochs):
             optimizer.step()
 
             bsz = targets.size(0)
-            top1, top5 = topk_accuracy(logits, targets, topk=(1, 5))
+            acc, top5 = topk_accuracy(logits, targets, topk=(1, 5))
 
             total_loss += loss.item() * bsz
-            total_top1 += top1
+            total_acc += acc
             total_top5 += top5
             total_samples += bsz
 
-    elapsed = time.time() - t0
+            if batch_idx % log_interval == 0 or batch_idx == len(loader):
+                avg_loss = total_loss / total_samples
+                avg_acc = total_acc / total_samples
+                avg_top5 = total_top5 / total_samples
+                progress = (global_batch / total_batches) * 100.0
 
+                log(
+                    f"[{worker_name}] progress={progress:6.2f}% | "
+                    f"epoch={epoch + 1}/{local_epochs} | "
+                    f"batch={batch_idx}/{len(loader)} | "
+                    f"avg_loss={avg_loss:.4f} | "
+                    f"avg_acc={avg_acc:.4f} | "
+                    f"avg_top5={avg_top5:.4f}",
+                    "METRIC",
+                )
+
+    elapsed = time.time() - t0
     return {
         "train_loss": total_loss / total_samples,
-        "train_top1": total_top1 / total_samples,
+        "train_acc": total_acc / total_samples,
         "train_top5": total_top5 / total_samples,
         "num_samples": total_samples,
         "train_time": elapsed,
     }
 
 
-# ----------------------------
-# Main worker
-# ----------------------------
+# =========================================================
+# Main
+# =========================================================
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--server-host", type=str, default="127.0.0.1")
@@ -220,19 +308,27 @@ def main():
     parser.add_argument("--name", type=str, default="worker")
     parser.add_argument("--socket-timeout", type=float, default=7200.0)
     parser.add_argument("--prefer-mps", action="store_true")
+    parser.add_argument("--log-interval", type=int, default=50)
     args = parser.parse_args()
 
+    banner(args.name)
+
     device = select_device(prefer_mps=args.prefer_mps)
-    print(f"[Worker {args.name}] device={device}")
+    log(f"Worker name: {args.name}", "OK")
+    log(f"Selected device: {device}", "OK")
+    log(f"Dataset root: {args.data_dir}", "OK")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(args.socket_timeout)
-    sock.connect((args.server_host, args.server_port))
 
+    log(f"Connecting to server {args.server_host}:{args.server_port}...", "STEP")
+    sock.connect((args.server_host, args.server_port))
     send_msg(sock, {"type": "hello", "worker_name": args.name})
-    print(f"[Worker {args.name}] conectado a {args.server_host}:{args.server_port}")
+    log("Handshake sent successfully", "OK")
 
     model = build_model(num_classes=200).to(device)
+    num_params = sum(p.numel() for p in model.parameters())
+    log(f"Model parameters: {num_params:,}", "OK")
 
     cached_loader = None
     cached_num_samples = None
@@ -242,15 +338,16 @@ def main():
 
     try:
         while True:
+            log("Waiting for server message...", "STEP")
             msg = recv_msg(sock)
             msg_type = msg.get("type")
 
             if msg_type == "shutdown":
-                print(f"[Worker {args.name}] shutdown")
+                log("Shutdown signal received. Worker exiting.", "WARN")
                 break
 
             if msg_type != "train":
-                raise ValueError(f"Mensaje no soportado: {msg_type}")
+                raise ValueError(f"Unsupported message type: {msg_type}")
 
             round_idx = msg["round"]
             worker_id = msg["worker_id"]
@@ -260,9 +357,11 @@ def main():
             batch_size = msg["batch_size"]
             loader_workers = msg["loader_workers"]
 
-            print(
-                f"[Worker {args.name}] Round {round_idx} | "
-                f"worker_id={worker_id} | partition_count={partition_count}"
+            print()
+            print(color("─" * 88, C.CYAN))
+            log(
+                f"Round {round_idx} received | worker_id={worker_id} | partition_count={partition_count}",
+                "STEP",
             )
 
             if (
@@ -271,6 +370,7 @@ def main():
                 or cached_batch_size != batch_size
                 or cached_loader_workers != loader_workers
             ):
+                log("Preparing local data partition...", "STEP")
                 cached_loader, cached_num_samples = make_partitioned_loader(
                     data_dir=args.data_dir,
                     worker_id=worker_id,
@@ -282,13 +382,15 @@ def main():
                 cached_batch_size = batch_size
                 cached_loader_workers = loader_workers
 
-                print(
-                    f"[Worker {args.name}] dataset local listo: "
-                    f"{cached_num_samples} samples"
+                log(
+                    f"Local partition ready | samples={cached_num_samples} | batches={len(cached_loader)}",
+                    "OK",
                 )
+            else:
+                log("Reusing cached local dataloader", "OK")
 
-            state_dict = msg["state_dict"]
-            model.load_state_dict(state_dict, strict=True)
+            log("Loading global weights from server...", "STEP")
+            model.load_state_dict(msg["state_dict"], strict=True)
             model.to(device)
 
             metrics = train_one_round(
@@ -297,6 +399,8 @@ def main():
                 device=device,
                 lr=lr,
                 local_epochs=local_epochs,
+                worker_name=args.name,
+                log_interval=args.log_interval,
             )
 
             reply = {
@@ -305,22 +409,24 @@ def main():
                 "worker_id": worker_id,
                 "state_dict": state_dict_to_cpu(model.state_dict()),
                 "train_loss": metrics["train_loss"],
-                "train_top1": metrics["train_top1"],
+                "train_acc": metrics["train_acc"],
                 "train_top5": metrics["train_top5"],
                 "num_samples": metrics["num_samples"],
                 "train_time": metrics["train_time"],
             }
 
+            log("Sending updated model back to server...", "STEP")
             send_msg(sock, reply)
 
-            print(
-                f"[Worker {args.name}] enviado resultado | "
-                f"loss={metrics['train_loss']:.4f} | "
-                f"top1={metrics['train_top1']:.4f} | "
-                f"top5={metrics['train_top5']:.4f} | "
-                f"samples={metrics['num_samples']} | "
-                f"time={metrics['train_time']:.2f}s"
-            )
+            print(color("┌" + "─" * 86 + "┐", C.GREEN))
+            print(color(
+                f"│ WORKER {args.name} ROUND {round_idx:02d} COMPLETED".ljust(87) + "│",
+                C.GREEN,
+            ))
+            print(color("├" + "─" * 86 + "┤", C.GREEN))
+            print(f"│ train_loss={metrics['train_loss']:.4f} | train_acc={metrics['train_acc']:.4f} | train_top5={metrics['train_top5']:.4f}".ljust(87) + "│")
+            print(f"│ num_samples={metrics['num_samples']} | train_time={metrics['train_time']:.2f}s".ljust(87) + "│")
+            print(color("└" + "─" * 86 + "┘", C.GREEN), flush=True)
 
             gc.collect()
             if device.type == "mps":
@@ -332,14 +438,15 @@ def main():
                 torch.cuda.empty_cache()
 
     except Exception as e:
-        err = traceback.format_exc()
-        print(f"[Worker {args.name}] ERROR:\n{err}")
+        tb = traceback.format_exc()
+        log(f"Fatal worker error: {e}", "ERR")
+        print(tb, flush=True)
         try:
             send_msg(sock, {
                 "type": "error",
                 "worker_name": args.name,
                 "error": str(e),
-                "traceback": err,
+                "traceback": tb,
             })
         except Exception:
             pass
@@ -348,7 +455,7 @@ def main():
             sock.close()
         except Exception:
             pass
-        print(f"[Worker {args.name}] cerrado")
+        log("Worker closed cleanly.", "OK")
 
 
 if __name__ == "__main__":
