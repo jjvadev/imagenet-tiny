@@ -98,7 +98,7 @@ def main():
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--train-batch-size", type=int, default=128)
     parser.add_argument("--val-batch-size", type=int, default=256)
-    parser.add_argument("--loader-workers", type=int, default=2)
+    parser.add_argument("--loader-workers", type=int, default=0)
     parser.add_argument("--image-size", type=int, default=64)
     parser.add_argument("--arch", type=str, default="small_cnn", choices=["small_cnn", "resnet18"])
     parser.add_argument("--max-val-samples", type=int, default=2000)
@@ -118,11 +118,11 @@ def main():
 
     device = select_device(prefer_mps=args.prefer_mps)
     run_dir = make_run_dir(args.output_dir)
-    wall_start = time.time()
+    wall_start = None
 
     print(f"[SERVER] Run dir: {run_dir}")
     print(f"[SERVER] Device: {device}")
-    print(f"[SERVER] Cargando validación...")
+    print(f"[SERVER] Cargando validacion...")
 
     val_loader = make_val_loader(
         data_dir=args.data_dir,
@@ -165,8 +165,12 @@ def main():
 
     try:
         for epoch in range(args.rounds):
+            if wall_start is None:
+                wall_start = time.time()
+
             epoch_start = time.time()
             active_workers = [w for w in workers if w["alive"]]
+
             if not active_workers:
                 print("[SERVER] No hay workers activos.")
                 break
@@ -208,7 +212,7 @@ def main():
                     reply = recv_msg(worker["conn"])
                 except Exception as e:
                     worker["alive"] = False
-                    print(f"[SERVER] Worker caído {worker['name']}: {e}")
+                    print(f"[SERVER] Worker caido {worker['name']}: {e}")
                     continue
 
                 if reply.get("type") == "result":
@@ -222,10 +226,10 @@ def main():
                     )
                 else:
                     worker["alive"] = False
-                    print(f"[SERVER] Respuesta inválida de {worker['name']}")
+                    print(f"[SERVER] Respuesta invalida de {worker['name']}: {reply.get('type')}")
 
             if not results:
-                print("[SERVER] No hubo resultados válidos.")
+                print("[SERVER] No hubo resultados validos.")
                 break
 
             new_state = weighted_average_state_dict(results)

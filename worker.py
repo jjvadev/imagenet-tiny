@@ -111,7 +111,7 @@ def main():
                 cached_image_size = image_size
 
                 print(
-                    f"[WORKER {args.name}] Partición lista | "
+                    f"[WORKER {args.name}] Particion lista | "
                     f"samples={cached_num_samples} | batches={len(cached_loader)}"
                 )
 
@@ -141,10 +141,13 @@ def main():
                 "train_time": float(metrics["train_time"]),
             }
 
+            print(f"[WORKER {args.name}] reply keys: {list(reply.keys())}")
+
             send_msg(sock, reply)
 
             print(
                 f"[WORKER {args.name}] "
+                f"type={reply['type']} | "
                 f"train_loss={reply['train_loss']:.6f} | "
                 f"train_acc={reply['train_acc']:.6f} | "
                 f"samples={reply['num_samples']} | "

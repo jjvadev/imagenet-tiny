@@ -15,12 +15,9 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import models, transforms
 
 HEADER_SIZE = 8
-IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".jpeg", ".JPEG"}
+IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".JPEG"}
 
 
-# =========================================================
-# Seeds / device
-# =========================================================
 def seed_everything(seed: int = 42) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -37,9 +34,6 @@ def select_device(prefer_mps: bool = True) -> torch.device:
     return torch.device("cpu")
 
 
-# =========================================================
-# Socket helpers
-# =========================================================
 def send_msg(sock: socket.socket, obj) -> None:
     payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
     header = struct.pack("!Q", len(payload))
@@ -51,7 +45,7 @@ def recv_exact(sock: socket.socket, n: int) -> bytes:
     while len(data) < n:
         chunk = sock.recv(n - len(data))
         if not chunk:
-            raise ConnectionError("La conexión fue cerrada")
+            raise ConnectionError("La conexion fue cerrada")
         data.extend(chunk)
     return bytes(data)
 
@@ -63,11 +57,41 @@ def recv_msg(sock: socket.socket):
     return pickle.loads(payload)
 
 
-# =========================================================
-# Dataset Tiny ImageNet
-# =========================================================
 def _is_image_file(path: Path) -> bool:
-    return path.is_file() and path.suffix in IMG_EXTENSIONS
+    return path.is_file() and path.suffix.lower() in {e.lower() for e in IMG_EXTENSIONS}
+
+
+def _load_class_names(root: Path) -> list[str]:
+    wnids_file = root / "wnids.txt"
+    if wnids_file.exists():
+        with open(wnids_file, "r", encoding="utf-8") as f:
+            class_names = [line.strip() for line in f if line.strip()]
+        if class_names:
+            return class_names
+
+    train_dir = root / "train"
+    if train_dir.exists():
+        class_names = sorted([p.name for p in train_dir.iterdir() if p.is_dir()])
+        if class_names:
+            return class_names
+
+    val_dir = root / "val"
+    ann_file = val_dir / "val_annotations.txt"
+    if ann_file.exists():
+        classes = set()
+        with open(ann_file, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split("\t")
+                if len(parts) >= 2:
+                    classes.add(parts[1])
+        class_names = sorted(classes)
+        if class_names:
+            return class_names
+
+    raise FileNotFoundError(
+        f"No se pudieron obtener las clases desde {root}. "
+        f"Falta wnids.txt y no fue posible inferir clases desde train/ o val/."
+    )
 
 
 class TinyImageNetDataset(Dataset):
@@ -76,13 +100,7 @@ class TinyImageNetDataset(Dataset):
         self.split = split
         self.transform = transform
 
-        wnids_file = self.root / "wnids.txt"
-        if not wnids_file.exists():
-            raise FileNotFoundError(f"No existe: {wnids_file}")
-
-        with open(wnids_file, "r", encoding="utf-8") as f:
-            self.class_names = [line.strip() for line in f if line.strip()]
-
+        self.class_names = _load_class_names(self.root)
         self.class_to_idx = {name: idx for idx, name in enumerate(self.class_names)}
         self.samples: list[tuple[str, int]] = []
 
@@ -230,9 +248,6 @@ def make_val_loader(
     return loader
 
 
-# =========================================================
-# Modelo
-# =========================================================
 class SmallCNN(nn.Module):
     def __init__(self, num_classes: int = 200, dropout: float = 0.2):
         super().__init__()
@@ -284,9 +299,6 @@ def build_model(arch: str = "small_cnn", num_classes: int = 200):
     raise ValueError("arch debe ser 'small_cnn' o 'resnet18'")
 
 
-# =========================================================
-# Training helpers
-# =========================================================
 def state_dict_to_cpu(state_dict):
     out = {}
     for k, v in state_dict.items():
@@ -297,7 +309,7 @@ def state_dict_to_cpu(state_dict):
 def weighted_average_state_dict(worker_payloads):
     total_samples = sum(p["num_samples"] for p in worker_payloads)
     if total_samples <= 0:
-        raise ValueError("No hay muestras válidas para agregar")
+        raise ValueError("No hay muestras validas para agregar")
 
     ref_state = worker_payloads[0]["state_dict"]
     agg = {}
@@ -359,7 +371,7 @@ def train_one_round(
     optimizer = build_optimizer(model, optimizer_name, lr, weight_decay, momentum)
 
     amp_enabled = use_amp and device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
     model.to(device)
     model.train()
@@ -376,7 +388,7 @@ def train_one_round(
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.cuda.amp.autocast(enabled=amp_enabled):
+            with torch.amp.autocast("cuda", enabled=amp_enabled):
                 logits = model(images)
                 loss = criterion(logits, targets)
 
@@ -420,7 +432,7 @@ def evaluate(
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
-        with torch.cuda.amp.autocast(enabled=amp_enabled):
+        with torch.amp.autocast("cuda", enabled=amp_enabled):
             logits = model(images)
             loss = criterion(logits, targets)
 
