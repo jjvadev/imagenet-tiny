@@ -15,3 +15,6 @@ python worker.py \
   --server-port 5000 \
   --data-dir "$HOME/imagenet-worker/tiny-imagenet-200" \
   --name linuxworker1
+
+
+  para actualizar al ultimo commit
