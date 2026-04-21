@@ -48,14 +48,9 @@ def main():
     send_msg(sock, {"type": "hello", "worker_name": args.name})
 
     model = None
-    current_arch = None
-
+    cached_signature = None
     cached_loader = None
     cached_num_samples = None
-    cached_partition = None
-    cached_batch_size = None
-    cached_loader_workers = None
-    cached_image_size = None
 
     try:
         while True:
@@ -81,21 +76,37 @@ def main():
             loader_workers = msg["loader_workers"]
             image_size = msg["image_size"]
             arch = msg["arch"]
+            pretrained = msg.get("pretrained", False)
+            freeze_backbone = msg.get("freeze_backbone", False)
 
             print(f"\n[WORKER {args.name}] ===== Epoch {epoch} =====")
 
-            if model is None or current_arch != arch:
-                model = build_model(arch=arch, num_classes=200).to(device)
-                current_arch = arch
-                print(f"[WORKER {args.name}] Modelo creado: {arch}")
+            model_signature = (arch, pretrained, freeze_backbone)
 
-            if (
-                cached_loader is None
-                or cached_partition != (worker_id, partition_count)
-                or cached_batch_size != batch_size
-                or cached_loader_workers != loader_workers
-                or cached_image_size != image_size
-            ):
+            if model is None or cached_signature != model_signature:
+                model = build_model(
+                    arch=arch,
+                    num_classes=200,
+                    pretrained=pretrained,
+                    freeze_backbone=freeze_backbone,
+                ).to(device)
+                cached_signature = model_signature
+                print(
+                    f"[WORKER {args.name}] Modelo creado: "
+                    f"arch={arch} | pretrained={pretrained} | freeze_backbone={freeze_backbone}"
+                )
+
+            loader_signature = (
+                worker_id,
+                partition_count,
+                batch_size,
+                loader_workers,
+                image_size,
+                arch,
+                pretrained,
+            )
+
+            if cached_loader is None or loader_signature != getattr(main, "_last_loader_signature", None):
                 cached_loader, cached_num_samples = make_partitioned_train_loader(
                     data_dir=args.data_dir,
                     worker_id=worker_id,
@@ -104,11 +115,10 @@ def main():
                     loader_workers=loader_workers,
                     image_size=image_size,
                     seed=args.seed,
+                    arch=arch,
+                    pretrained=pretrained,
                 )
-                cached_partition = (worker_id, partition_count)
-                cached_batch_size = batch_size
-                cached_loader_workers = loader_workers
-                cached_image_size = image_size
+                main._last_loader_signature = loader_signature
 
                 print(
                     f"[WORKER {args.name}] Particion lista | "
@@ -140,8 +150,6 @@ def main():
                 "num_samples": int(metrics["num_samples"]),
                 "train_time": float(metrics["train_time"]),
             }
-
-            print(f"[WORKER {args.name}] reply keys: {list(reply.keys())}")
 
             send_msg(sock, reply)
 

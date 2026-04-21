@@ -1,0 +1,14 @@
+{
+  "arch": "resnet18",
+  "optimizer": "adam",
+  "epochs_completed": 4,
+  "num_workers": 4,
+  "local_epochs": 1,
+  "lr": 0.001,
+  "train_batch_size": 128,
+  "val_batch_size": 256,
+  "device": "cpu",
+  "best_test": 0.186,
+  "best_epoch": 3,
+  "total_time_sec": 12176.71392083168
+}

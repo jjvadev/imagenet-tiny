@@ -1,0 +1,14 @@
+{
+  "arch": "small_cnn",
+  "optimizer": "adam",
+  "epochs_completed": 50,
+  "num_workers": 6,
+  "local_epochs": 1,
+  "lr": 0.01,
+  "train_batch_size": 128,
+  "val_batch_size": 256,
+  "device": "cpu",
+  "best_test": 0.3395,
+  "best_epoch": 39,
+  "total_time_sec": 6257.502163887024
+}

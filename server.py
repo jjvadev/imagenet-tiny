@@ -33,7 +33,7 @@ def make_run_dir(base_dir="runs"):
 
 
 def save_history_csv(history, out_path: Path):
-    fieldnames = ["epoch", "cost", "train", "test", "epoch_time", "total_time"]
+    fieldnames = ["epoch", "cost", "train", "test", "epoch_time", "total_time", "lr"]
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -83,6 +83,23 @@ def save_plots(history, run_dir: Path):
     plt.savefig(run_dir / "time_curve.png")
     plt.close()
 
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, [h["lr"] for h in history], marker="o")
+    plt.xlabel("Epoch")
+    plt.ylabel("Learning Rate")
+    plt.title("LR por epoch")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(run_dir / "lr_curve.png")
+    plt.close()
+
+
+def compute_epoch_lr(base_lr: float, epoch: int, step_size: int, gamma: float) -> float:
+    if step_size <= 0:
+        return base_lr
+    factor = epoch // step_size
+    return base_lr * (gamma ** factor)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -93,19 +110,24 @@ def main():
     parser.add_argument("--rounds", type=int, default=50)
     parser.add_argument("--local-epochs", type=int, default=1)
     parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "sgd"])
+    parser.add_argument("--lr-step-size", type=int, default=20)
+    parser.add_argument("--lr-gamma", type=float, default=0.5)
+    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adam", "sgd", "adamw"])
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--train-batch-size", type=int, default=128)
     parser.add_argument("--val-batch-size", type=int, default=256)
     parser.add_argument("--loader-workers", type=int, default=0)
-    parser.add_argument("--image-size", type=int, default=64)
-    parser.add_argument("--arch", type=str, default="small_cnn", choices=["small_cnn", "resnet18"])
+    parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--arch", type=str, default="resnet18", choices=["small_cnn", "resnet18"])
+    parser.add_argument("--pretrained", action="store_true")
+    parser.add_argument("--freeze-backbone", action="store_true")
     parser.add_argument("--max-val-samples", type=int, default=2000)
     parser.add_argument("--socket-timeout", type=float, default=7200.0)
     parser.add_argument("--output-dir", type=str, default="runs")
     parser.add_argument("--prefer-mps", action="store_true")
     parser.add_argument("--save-model", action="store_true")
+    parser.add_argument("--save-best-model", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -131,10 +153,17 @@ def main():
         image_size=args.image_size,
         max_samples=args.max_val_samples,
         seed=args.seed,
+        arch=args.arch,
+        pretrained=args.pretrained,
     )
 
-    print(f"[SERVER] Construyendo modelo global...")
-    global_model = build_model(arch=args.arch, num_classes=200).to(device)
+    print("[SERVER] Construyendo modelo global...")
+    global_model = build_model(
+        arch=args.arch,
+        num_classes=200,
+        pretrained=args.pretrained,
+        freeze_backbone=args.freeze_backbone,
+    ).to(device)
 
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -146,6 +175,8 @@ def main():
 
     workers = []
     history = []
+    best_test = -1.0
+    best_epoch = -1
 
     for worker_id in range(args.num_workers):
         conn, addr = server_sock.accept()
@@ -175,7 +206,10 @@ def main():
                 print("[SERVER] No hay workers activos.")
                 break
 
+            current_lr = compute_epoch_lr(args.lr, epoch, args.lr_step_size, args.lr_gamma)
+
             print(f"\n[SERVER] ===== Epoch {epoch} / {args.rounds - 1} =====")
+            print(f"[SERVER] LR actual: {current_lr:.8f}")
 
             global_state = state_dict_to_cpu(global_model.state_dict())
             sent_workers = []
@@ -188,7 +222,7 @@ def main():
                     "partition_count": args.num_workers,
                     "state_dict": global_state,
                     "local_epochs": args.local_epochs,
-                    "lr": args.lr,
+                    "lr": current_lr,
                     "optimizer": args.optimizer,
                     "weight_decay": args.weight_decay,
                     "momentum": args.momentum,
@@ -196,6 +230,8 @@ def main():
                     "loader_workers": args.loader_workers,
                     "image_size": args.image_size,
                     "arch": args.arch,
+                    "pretrained": args.pretrained,
+                    "freeze_backbone": args.freeze_backbone,
                 }
 
                 try:
@@ -250,8 +286,16 @@ def main():
                 "test": float(metrics["acc"]),
                 "epoch_time": float(epoch_time),
                 "total_time": float(total_time),
+                "lr": float(current_lr),
             }
             history.append(row)
+
+            if row["test"] > best_test:
+                best_test = row["test"]
+                best_epoch = row["epoch"]
+                if args.save_best_model:
+                    torch.save(global_model.state_dict(), run_dir / "model_best.pth")
+                    print(f"[SERVER] Nuevo mejor modelo guardado en epoch {best_epoch} con test={best_test:.6f}")
 
             print(
                 f"[SERVER] epoch={row['epoch']} | "
@@ -268,7 +312,6 @@ def main():
 
             save_history_csv(history, history_csv)
 
-            best_row = max(history, key=lambda x: x["test"])
             summary = {
                 "arch": args.arch,
                 "optimizer": args.optimizer,
@@ -276,12 +319,17 @@ def main():
                 "num_workers": args.num_workers,
                 "local_epochs": args.local_epochs,
                 "lr": args.lr,
+                "lr_step_size": args.lr_step_size,
+                "lr_gamma": args.lr_gamma,
                 "train_batch_size": args.train_batch_size,
                 "val_batch_size": args.val_batch_size,
                 "device": str(device),
-                "best_test": float(best_row["test"]),
-                "best_epoch": int(best_row["epoch"]),
+                "best_test": float(best_test),
+                "best_epoch": int(best_epoch),
                 "total_time_sec": float(history[-1]["total_time"]),
+                "pretrained": bool(args.pretrained),
+                "freeze_backbone": bool(args.freeze_backbone),
+                "image_size": int(args.image_size),
             }
             save_summary_json(summary, summary_json)
 

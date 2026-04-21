@@ -155,11 +155,43 @@ class TinyImageNetDataset(Dataset):
         return image, target
 
 
-def build_transforms(image_size: int = 64, train: bool = False):
-    normalize = transforms.Normalize(
-        mean=[0.4802, 0.4481, 0.3975],
-        std=[0.2770, 0.2691, 0.2821],
-    )
+def build_transforms(
+    image_size: int = 64,
+    train: bool = False,
+    arch: str = "small_cnn",
+    pretrained: bool = False,
+):
+    arch = arch.lower().strip()
+
+    if arch == "resnet18" and pretrained:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+
+        if train:
+            return transforms.Compose(
+                [
+                    transforms.Resize((image_size, image_size)),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ColorJitter(
+                        brightness=0.2,
+                        contrast=0.2,
+                        saturation=0.2,
+                    ),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=mean, std=std),
+                ]
+            )
+
+        return transforms.Compose(
+            [
+                transforms.Resize((image_size, image_size)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std),
+            ]
+        )
+
+    mean = [0.4802, 0.4481, 0.3975]
+    std = [0.2770, 0.2691, 0.2821]
 
     if train:
         return transforms.Compose(
@@ -167,7 +199,7 @@ def build_transforms(image_size: int = 64, train: bool = False):
                 transforms.RandomCrop(image_size, padding=4),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
-                normalize,
+                transforms.Normalize(mean=mean, std=std),
             ]
         )
 
@@ -175,7 +207,7 @@ def build_transforms(image_size: int = 64, train: bool = False):
         [
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
-            normalize,
+            transforms.Normalize(mean=mean, std=std),
         ]
     )
 
@@ -188,11 +220,18 @@ def make_partitioned_train_loader(
     loader_workers: int,
     image_size: int = 64,
     seed: int = 42,
+    arch: str = "small_cnn",
+    pretrained: bool = False,
 ):
     dataset = TinyImageNetDataset(
         root=data_dir,
         split="train",
-        transform=build_transforms(image_size=image_size, train=True),
+        transform=build_transforms(
+            image_size=image_size,
+            train=True,
+            arch=arch,
+            pretrained=pretrained,
+        ),
     )
 
     g = torch.Generator().manual_seed(seed)
@@ -222,11 +261,18 @@ def make_val_loader(
     image_size: int = 64,
     max_samples: int = 0,
     seed: int = 42,
+    arch: str = "small_cnn",
+    pretrained: bool = False,
 ):
     dataset = TinyImageNetDataset(
         root=data_dir,
         split="val",
-        transform=build_transforms(image_size=image_size, train=False),
+        transform=build_transforms(
+            image_size=image_size,
+            train=False,
+            arch=arch,
+            pretrained=pretrained,
+        ),
     )
 
     if max_samples and max_samples > 0 and max_samples < len(dataset):
@@ -249,7 +295,7 @@ def make_val_loader(
 
 
 class SmallCNN(nn.Module):
-    def __init__(self, num_classes: int = 200, dropout: float = 0.2):
+    def __init__(self, num_classes: int = 200, dropout: float = 0.3):
         super().__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 32, 3, padding=1),
@@ -283,17 +329,30 @@ class SmallCNN(nn.Module):
         return self.classifier(x)
 
 
-def build_model(arch: str = "small_cnn", num_classes: int = 200):
+def freeze_backbone_resnet18(model: nn.Module):
+    for name, param in model.named_parameters():
+        if not name.startswith("fc."):
+            param.requires_grad = False
+    return model
+
+
+def build_model(
+    arch: str = "small_cnn",
+    num_classes: int = 200,
+    pretrained: bool = False,
+    freeze_backbone: bool = False,
+):
     arch = arch.lower().strip()
 
     if arch == "small_cnn":
         return SmallCNN(num_classes=num_classes)
 
     if arch == "resnet18":
-        model = models.resnet18(weights=None)
-        model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        model.maxpool = nn.Identity()
+        weights = models.ResNet18_Weights.DEFAULT if pretrained else None
+        model = models.resnet18(weights=weights)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
+        if freeze_backbone:
+            model = freeze_backbone_resnet18(model)
         return model
 
     raise ValueError("arch debe ser 'small_cnn' o 'resnet18'")
@@ -334,7 +393,13 @@ def accuracy_top1(logits: torch.Tensor, targets: torch.Tensor) -> float:
     return float(correct)
 
 
-def build_optimizer(model: nn.Module, optimizer_name: str, lr: float, weight_decay: float, momentum: float):
+def build_optimizer(
+    model: nn.Module,
+    optimizer_name: str,
+    lr: float,
+    weight_decay: float,
+    momentum: float,
+):
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer_name = optimizer_name.lower()
 
@@ -353,7 +418,14 @@ def build_optimizer(model: nn.Module, optimizer_name: str, lr: float, weight_dec
             weight_decay=weight_decay,
         )
 
-    raise ValueError("optimizer debe ser 'sgd' o 'adam'")
+    if optimizer_name == "adamw":
+        return torch.optim.AdamW(
+            trainable_params,
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+
+    raise ValueError("optimizer debe ser 'sgd', 'adam' o 'adamw'")
 
 
 def train_one_round(
