@@ -1,0 +1,20 @@
+{
+  "arch": "resnet18",
+  "optimizer": "adamw",
+  "epochs_completed": 20,
+  "num_workers": 1,
+  "local_epochs": 1,
+  "lr": 5e-05,
+  "lr_step_size": 5,
+  "lr_gamma": 0.5,
+  "train_batch_size": 128,
+  "val_batch_size": 256,
+  "device": "cpu",
+  "best_test": 0.6863,
+  "best_epoch": 16,
+  "total_time_sec": 13000.078450918198,
+  "pretrained": true,
+  "freeze_backbone": false,
+  "image_size": 128,
+  "resume_from": "runs\\run_20260420_181222\\model_best.pth"
+}

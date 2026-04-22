@@ -101,6 +101,20 @@ def compute_epoch_lr(base_lr: float, epoch: int, step_size: int, gamma: float) -
     return base_lr * (gamma ** factor)
 
 
+def try_load_checkpoint(model: torch.nn.Module, ckpt_path: str | None):
+    if not ckpt_path:
+        return False
+
+    path = Path(ckpt_path)
+    if not path.exists():
+        raise FileNotFoundError(f"No existe el checkpoint: {path}")
+
+    state = torch.load(path, map_location="cpu")
+    model.load_state_dict(state, strict=True)
+    print(f"[SERVER] Checkpoint cargado: {path}")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="0.0.0.0")
@@ -128,6 +142,7 @@ def main():
     parser.add_argument("--prefer-mps", action="store_true")
     parser.add_argument("--save-model", action="store_true")
     parser.add_argument("--save-best-model", action="store_true")
+    parser.add_argument("--resume-from", type=str, default="")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -165,6 +180,8 @@ def main():
         freeze_backbone=args.freeze_backbone,
     ).to(device)
 
+    resumed = try_load_checkpoint(global_model, args.resume_from)
+
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_sock.bind((args.host, args.port))
@@ -195,6 +212,17 @@ def main():
         print(f"[SERVER] Conectado worker {worker_id}: {worker_name} @ {addr[0]}:{addr[1]}")
 
     try:
+        if resumed:
+            print("[SERVER] Evaluando checkpoint cargado antes de continuar...")
+            initial_metrics = evaluate(global_model, val_loader, device=device, use_amp=True)
+            best_test = float(initial_metrics["acc"])
+            best_epoch = -1
+            print(
+                f"[SERVER] Checkpoint inicial | "
+                f"cost={initial_metrics['loss']:.6f} | "
+                f"test={initial_metrics['acc']:.6f}"
+            )
+
         for epoch in range(args.rounds):
             if wall_start is None:
                 wall_start = time.time()
@@ -330,6 +358,7 @@ def main():
                 "pretrained": bool(args.pretrained),
                 "freeze_backbone": bool(args.freeze_backbone),
                 "image_size": int(args.image_size),
+                "resume_from": args.resume_from,
             }
             save_summary_json(summary, summary_json)
 
